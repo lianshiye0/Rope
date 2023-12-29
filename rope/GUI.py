@@ -11,6 +11,7 @@ from math import floor, ceil
 import copy
 import bisect
 import torch
+import torch_directml
 import torchvision
 torchvision.disable_beta_transforms_warning()
 from torchvision.transforms import v2
@@ -772,7 +773,7 @@ class GUI(tk.Tk):
                         img = cv2.imread(file)
                         
                         if img is not None:     
-                            img = torch.from_numpy(img).to('cuda')
+                            img = torch.from_numpy(img).to(torch_directml.device())
                             img = img.permute(2,0,1)
                             kpss = self.detect(img, input_size = (640, 640), max_num=1, metric='default')
                             ret = []
@@ -814,7 +815,7 @@ class GUI(tk.Tk):
         
     def find_faces(self, scope):
         try:
-            img = torch.from_numpy(self.video_image).to('cuda')
+            img = torch.from_numpy(self.video_image).to(torch_directml.device())
             img = img.permute(2,0,1)
             kpss = self.detect(img, input_size = (640, 640), max_num=10, metric='default')
             ret = []
@@ -2003,7 +2004,7 @@ class GUI(tk.Tk):
         img = resize(img)
         img = img.permute(1,2,0)
 
-        det_img = torch.zeros((input_size[1], input_size[0], 3), dtype=torch.float32, device='cuda:0')
+        det_img = torch.zeros((input_size[1], input_size[0], 3), dtype=torch.float32, device=torch_directml.device())
         det_img[:new_height,:new_width,  :] = img
 
         # Switch to BGR and normalize
@@ -2014,25 +2015,19 @@ class GUI(tk.Tk):
         
         # Prepare data and find model parameters 
         det_img = torch.unsqueeze(det_img, 0).contiguous()
+        det_img = det_img.cpu().numpy()
         input_name = self.detection_model.get_inputs()[0].name
         
         outputs = self.detection_model.get_outputs()
         output_names = []
         for o in outputs:
             output_names.append(o.name)
-        
-        io_binding = self.detection_model.io_binding() 
-        io_binding.bind_input(name=input_name, device_type='cuda', device_id=0, element_type=np.float32,  shape=det_img.size(), buffer_ptr=det_img.data_ptr())
-        
-        for i in range(len(output_names)):
-            io_binding.bind_output(output_names[i], 'cuda') 
-        
-        # Sync and run model
-        syncvec = torch.empty((1,1), dtype=torch.float32, device='cuda:0')
-        syncvec = syncvec.cpu()        
-        self.detection_model.run_with_iobinding(io_binding)
-        
-        net_outs = io_binding.copy_outputs_to_cpu()
+        # 修改后的代码
+        # 创建一个空的列表
+        output = []
+        # 直接调用run方法，把det_img作为输入，得到输出张量
+        output = self.detection_model.run(None, {input_name: det_img})
+
 
         input_height = det_img.shape[2]
         input_width = det_img.shape[3]
@@ -2043,11 +2038,11 @@ class GUI(tk.Tk):
         bboxes_list = []
         kpss_list = []
         for idx, stride in enumerate([8, 16, 32]):
-            scores = net_outs[idx]
-            bbox_preds = net_outs[idx+fmc]
+            scores = output[idx]
+            bbox_preds = output[idx+fmc]
             bbox_preds = bbox_preds * stride
 
-            kps_preds = net_outs[idx+fmc*2] * stride
+            kps_preds = output[idx+fmc*2] * stride
             height = input_height // stride
             width = input_width // stride
             K = height * width
@@ -2172,27 +2167,20 @@ class GUI(tk.Tk):
         img = img.permute(2, 0, 1) #3,112,112
         
         # Prepare data and find model parameters        
-        img = torch.unsqueeze(img, 0).contiguous()     
+        img = torch.unsqueeze(img, 0).contiguous()
+        img = img.cpu().numpy()  
         input_name = self.recognition_model.get_inputs()[0].name
         
         outputs = self.recognition_model.get_outputs()
         output_names = []
         for o in outputs:
             output_names.append(o.name)
-        
-        io_binding = self.recognition_model.io_binding() 
-        io_binding.bind_input(name=input_name, device_type='cuda', device_id=0, element_type=np.float32,  shape=img.size(), buffer_ptr=img.data_ptr())
-
-        for i in range(len(output_names)):
-            io_binding.bind_output(output_names[i], 'cuda') 
-        
-        # Sync and run model
-        syncvec = torch.empty((1,1), dtype=torch.float32, device='cuda:0')
-        syncvec = syncvec.cpu()
-        self.recognition_model.run_with_iobinding(io_binding)
+        output = []
+        output = self.recognition_model.run(None, {input_name: img})
 
         # Return embedding
-        return np.array(io_binding.copy_outputs_to_cpu()).flatten(), img_out               
+        # 不需要使用io_binding.copy_outputs_to_cpu()，直接使用output[0]，它是一个numpy数组
+        return output[0].flatten(), img_out              
 
     
 
